@@ -29,6 +29,7 @@ if (process.env.__NEXT_USE_NODE_STREAMS) {
   renderToPipeableStream = (
     require('react-server-dom-webpack/server.node') as typeof import('react-server-dom-webpack/server.node')
   ).renderToPipeableStream
+  // TODO(node-streams): unused
   prerenderToNodeStream = (
     require('react-server-dom-webpack/static') as typeof import('react-server-dom-webpack/static')
   ).prerenderToNodeStream

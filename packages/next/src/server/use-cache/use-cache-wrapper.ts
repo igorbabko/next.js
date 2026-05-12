@@ -35,13 +35,16 @@ import {
   getCacheSignal,
   isHmrRefresh,
   getServerComponentsHmrCache,
+  getStagedRenderingController,
 } from '../app-render/work-unit-async-storage.external'
 
 import {
   applyOwnerStack,
+  ShellDataKind,
   getRuntimeStage,
   makeDevtoolsIOAwarePromise,
   makeHangingPromise,
+  getStaticStage,
 } from '../dynamic-rendering-utils'
 
 import type { ClientReferenceManifest } from '../../build/webpack/plugins/flight-manifest-plugin'
@@ -1687,7 +1690,11 @@ export async function cache(
         // while runtime-prefetchable segments resolve at Runtime.
         const stagedRendering = outerWorkUnitStore.stagedRendering
         if (stagedRendering) {
-          await stagedRendering.waitForStage(getRuntimeStage(stagedRendering))
+          // TODO(app-shells): exclude private caches with a short staletime from shells
+          const dataKind = ShellDataKind.Include
+          await stagedRendering.waitForStage(
+            getRuntimeStage(stagedRendering, dataKind)
+          )
         }
         break
       }
@@ -1696,9 +1703,13 @@ export async function cache(
           // Similar to runtime prerenders, private caches should not resolve in the static stage
           // of a dev request, so we delay them. We pick the appropriate runtime stage based on
           // whether we're in the early or late stages.
+
+          // TODO(app-shells): exclude private caches with a short staletime
+          const dataKind = ShellDataKind.Include
+
           const stagedRendering = outerWorkUnitStore.stagedRendering
           const stage = stagedRendering
-            ? getRuntimeStage(stagedRendering)
+            ? getRuntimeStage(stagedRendering, dataKind)
             : RenderStage.Runtime
           await makeDevtoolsIOAwarePromise(undefined, outerWorkUnitStore, stage)
         }
@@ -2097,8 +2108,10 @@ export async function cache(
               // are resolved with a delay, in the appropriate runtime stage.
               const stagedRendering = workUnitStore.stagedRendering
               if (stagedRendering) {
+                // TODO(app-shells): exclude caches with a short staletime
+                const dataKind = ShellDataKind.Include
                 await stagedRendering.waitForStage(
-                  getRuntimeStage(stagedRendering)
+                  getRuntimeStage(stagedRendering, dataKind)
                 )
               }
               break
@@ -2131,9 +2144,13 @@ export async function cache(
                 // TODO(restart-on-cache-miss): Optimize this to avoid unnecessary restarts.
                 // We don't end the cache read here, so this will always appear as a cache miss in the static stage,
                 // and thus will cause a restart even if all caches are filled.
+
+                // TODO(app-shells): exclude caches with a short staletime
+                const dataKind = ShellDataKind.Include
+
                 const stagedRendering = workUnitStore.stagedRendering
                 const stage = stagedRendering
-                  ? getRuntimeStage(stagedRendering)
+                  ? getRuntimeStage(stagedRendering, dataKind)
                   : RenderStage.Runtime
                 await makeDevtoolsIOAwarePromise(
                   undefined,
@@ -2202,6 +2219,46 @@ export async function cache(
               break
             default:
               workUnitStore satisfies never
+          }
+        }
+
+        // If we're doing staged rendering with shells and the cache accessed root params,
+        // we should exclude it from the shell, because root params are also excluded.
+        const stagedRendering = getStagedRenderingController(workUnitStore)
+        if (
+          stagedRendering &&
+          stagedRendering.hasShells &&
+          rootParams &&
+          rdcResult.readRootParamNames &&
+          rdcResult.readRootParamNames.size > 0
+        ) {
+          switch (workUnitStore.type) {
+            case 'request': {
+              // For 'request', assume we're recovering a static shell --
+              // runtime shells get handled elsewhere
+              await stagedRendering.waitForStage(
+                getStaticStage(stagedRendering, ShellDataKind.Exclude)
+              )
+              break
+            }
+            case 'prerender-runtime': {
+              // If we're rendering with shells, this is when params should resolve
+              await stagedRendering.waitForStage(
+                getRuntimeStage(stagedRendering, ShellDataKind.Exclude)
+              )
+              break
+            }
+            case 'prerender':
+            case 'cache':
+            case 'private-cache':
+            case 'prerender-legacy':
+            case 'prerender-ppr':
+            case 'generate-static-params': {
+              break
+            }
+            default: {
+              workUnitStore satisfies never
+            }
           }
         }
       }
@@ -2649,9 +2706,13 @@ export async function cache(
                 // unnecessary restarts. We don't end the cache read here, so
                 // this will always appear as a cache miss in the static stage,
                 // and thus will cause a restart even if all caches are filled.
+
+                // TODO(app-shells): exclude caches with a short staletime
+                const dataKind = ShellDataKind.Include
+
                 const stagedRendering = workUnitStore.stagedRendering
                 const stage = stagedRendering
-                  ? getRuntimeStage(stagedRendering)
+                  ? getRuntimeStage(stagedRendering, dataKind)
                   : RenderStage.Runtime
                 await makeDevtoolsIOAwarePromise(
                   undefined,

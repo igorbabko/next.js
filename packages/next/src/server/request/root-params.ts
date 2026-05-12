@@ -13,11 +13,20 @@ import {
   type PrerenderStoreModernServer,
   type PrerenderStorePPR,
 } from '../app-render/work-unit-async-storage.external'
-import { makeHangingPromise } from '../dynamic-rendering-utils'
+import {
+  getRuntimeStage,
+  getStaticStage,
+  makeHangingPromise,
+  ShellDataKind,
+} from '../dynamic-rendering-utils'
 import type { ParamValue } from './params'
 import { describeStringPropertyAccess } from '../../shared/lib/utils/reflect-utils'
 import { actionAsyncStorage } from '../app-render/action-async-storage.external'
 import { accumulateRootVaryParam } from '../app-render/vary-params'
+import type {
+  AdvanceableRenderStage,
+  StagedRenderingController,
+} from '../app-render/staged-rendering'
 
 /**
  * Used for the compiler-generated `next/root-params` module.
@@ -64,6 +73,8 @@ export function getRootParam(paramName: string): Promise<ParamValue> {
       )
     }
     case 'cache': {
+      // NOTE: In shell prerenders, we delay caches that used root params
+      // in use-cache-wrapper, during the final prerender
       if (!workUnitStore.rootParams) {
         throw new Error(
           `Route ${workStore.route} used ${apiName} inside \`"use cache"\` nested within \`unstable_cache\`. Root params are not available in this context.`
@@ -102,14 +113,40 @@ export function getRootParam(paramName: string): Promise<ParamValue> {
             workUnitStore.validationSamples.params,
             paramName
           )
+          break
         } catch (err) {
           return Promise.reject(err)
         }
       }
+      const { stagedRendering } = workUnitStore
+      if (stagedRendering && stagedRendering.hasShells) {
+        return createRootParamPromiseForShellRender(
+          stagedRendering,
+          getStaticStage(stagedRendering, ShellDataKind.Exclude),
+          apiName,
+          paramName,
+          workUnitStore.rootParams[paramName]
+        )
+      }
       break
     }
-    case 'private-cache':
+    case 'private-cache': {
+      // NOTE: In shell prerenders, we delay caches that used root params
+      // in use-cache-wrapper, during the final prerender
+      break
+    }
     case 'prerender-runtime': {
+      const { stagedRendering } = workUnitStore
+      if (stagedRendering && stagedRendering.hasShells) {
+        return createRootParamPromiseForShellRender(
+          stagedRendering,
+          getRuntimeStage(stagedRendering, ShellDataKind.Exclude),
+          apiName,
+          paramName,
+          workUnitStore.rootParams[paramName]
+        )
+      }
+
       break
     }
     case 'generate-static-params': {
@@ -127,6 +164,17 @@ export function getRootParam(paramName: string): Promise<ParamValue> {
 
   accumulateRootVaryParam(paramName)
   return Promise.resolve(workUnitStore.rootParams[paramName])
+}
+
+function createRootParamPromiseForShellRender(
+  stagedRendering: StagedRenderingController,
+  stage: AdvanceableRenderStage,
+  apiName: string,
+  paramName: string,
+  paramValue: ParamValue
+): Promise<ParamValue> {
+  accumulateRootVaryParam(paramName)
+  return stagedRendering.delayUntilStage(stage, apiName, paramValue)
 }
 
 function createPrerenderRootParamPromise(

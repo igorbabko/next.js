@@ -872,6 +872,7 @@ export async function retry<T>(
             description ? ` ${description}` : ''
           } within ${duration}ms`
         )
+        console.error(err)
         throw err
       }
       debugPrint(

@@ -23,6 +23,7 @@ import {
 import { StaticGenBailoutError } from '../../client/components/static-generation-bailout'
 import {
   delayUntilRuntimeStage,
+  ShellDataKind,
   makeDevtoolsIOAwarePromise,
   makeHangingPromise,
 } from '../dynamic-rendering-utils'
@@ -107,6 +108,7 @@ export function cookies(): Promise<ReadonlyRequestCookies> {
         case 'prerender-runtime':
           return delayUntilRuntimeStage(
             workUnitStore,
+            ShellDataKind.Include, // cookies are allowed in shells
             makeUntrackedCookies(workUnitStore.cookies)
           )
         case 'private-cache':
@@ -235,7 +237,7 @@ function makeUntrackedCookiesWithDevWarnings(
   const promise = makeDevtoolsIOAwarePromise(
     underlyingCookies,
     requestStore,
-    RenderStage.Runtime
+    RenderStage.ShellRuntime
   )
 
   const proxiedPromise = instrumentCookiesPromiseWithDevWarnings(promise, route)

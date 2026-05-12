@@ -32,8 +32,10 @@ import {
   wellKnownProperties,
 } from '../../shared/lib/utils/reflect-utils'
 import {
+  getStaticStage,
   makeDevtoolsIOAwarePromise,
   makeHangingPromise,
+  ShellDataKind,
 } from '../dynamic-rendering-utils'
 import { createDedupedByCallsiteServerErrorLoggerDev } from '../create-deduped-by-callsite-server-error-logger'
 import { dynamicAccessAsyncStorage } from '../app-render/dynamic-access-async-storage.external'
@@ -177,7 +179,6 @@ export function createServerParamsForRoute(
         return createRuntimePrerenderParams(
           underlyingParams,
           null,
-          workStore,
           workUnitStore,
           varyParamsAccumulator,
           isRuntimePrefetchable
@@ -250,7 +251,6 @@ export function createServerParamsForServerSegment(
         return createRuntimePrerenderParams(
           underlyingParams,
           optionalCatchAllParamName,
-          workStore,
           workUnitStore,
           varyParamsAccumulator,
           isRuntimePrefetchable
@@ -268,10 +268,9 @@ export function createServerParamsForServerSegment(
             workUnitStore,
             isRuntimePrefetchable
           )
-        } else if (
-          workUnitStore.asyncApiPromises &&
-          workUnitStore.validationSamples
-        ) {
+        }
+
+        if (workUnitStore.asyncApiPromises && workUnitStore.validationSamples) {
           return createServerParamsInInstantValidation(
             underlyingParams,
             workStore,
@@ -279,18 +278,42 @@ export function createServerParamsForServerSegment(
             workUnitStore.asyncApiPromises,
             isRuntimePrefetchable
           )
-        } else if (
-          workUnitStore.asyncApiPromises &&
-          hasFallbackRouteParams(underlyingParams, workUnitStore.fallbackParams)
-        ) {
-          return (
-            isRuntimePrefetchable
-              ? workUnitStore.asyncApiPromises.earlySharedParamsParent
-              : workUnitStore.asyncApiPromises.sharedParamsParent
-          ).then(() => underlyingParams)
-        } else {
-          return createRenderParamsInProd(underlyingParams)
         }
+
+        const { stagedRendering } = workUnitStore
+        const hasFallbackParams = hasFallbackRouteParams(
+          underlyingParams,
+          workUnitStore.fallbackParams
+        )
+
+        if (
+          workUnitStore.asyncApiPromises &&
+          stagedRendering &&
+          (stagedRendering.hasShells || hasFallbackParams)
+        ) {
+          // If we're rendering with shells, we delay even static params to exclude them from fallbacks.
+          if (
+            stagedRendering.hasShells &&
+            !hasFallbackParams &&
+            !isEmptyParams(underlyingParams)
+          ) {
+            return stagedRendering.delayUntilStage(
+              getStaticStage(stagedRendering, ShellDataKind.Exclude),
+              '`params`',
+              underlyingParams
+            )
+          }
+          // Otherwise, only delay if we have fallbacks params
+          if (hasFallbackParams) {
+            return (
+              isRuntimePrefetchable
+                ? workUnitStore.asyncApiPromises.earlySharedParamsParent
+                : workUnitStore.asyncApiPromises.sharedParamsParent
+            ).then(() => underlyingParams)
+          }
+        }
+
+        return createRenderParamsInProd(underlyingParams)
       default:
         workUnitStore satisfies never
     }
@@ -346,17 +369,6 @@ export function createPrerenderParamsForClientSegment(
           'createPrerenderParamsForClientSegment should not be called inside generateStaticParams.'
         )
       case 'prerender-runtime':
-        if (workUnitStore.forceOmitParams) {
-          // App Shell prefetch: hang on params so the client segment doesn't
-          // receive a resolved value and render. Matches the server-side
-          // behavior in createRuntimePrerenderParams.
-          return makeHangingPromise(
-            workUnitStore.renderSignal,
-            workStore.route,
-            '`params`'
-          )
-        }
-        break
       case 'prerender-ppr':
       case 'prerender-legacy':
       case 'request':
@@ -390,6 +402,7 @@ function createStaticPrerenderParams(
   switch (prerenderStore.type) {
     case 'prerender':
     case 'prerender-client': {
+      // TODO(app-shells): implement shell generation for static prerenders
       const fallbackParams = prerenderStore.fallbackRouteParams
       if (fallbackParams) {
         for (const key in underlyingParams) {
@@ -436,21 +449,10 @@ function createStaticPrerenderParams(
 function createRuntimePrerenderParams(
   underlyingParams: Params,
   optionalCatchAllParamName: string | null,
-  workStore: WorkStore,
   workUnitStore: PrerenderStoreModernRuntime,
   varyParamsAccumulator: VaryParamsAccumulator | null,
   isRuntimePrefetchable: boolean
 ): Promise<Params> {
-  if (workUnitStore.forceOmitParams) {
-    // App Shell prefetch: any `await params` suspends. Segments that depend
-    // on params render as holes, leaving the param-independent shell.
-    return makeHangingPromise<Params>(
-      workUnitStore.renderSignal,
-      workStore.route,
-      '`params`'
-    )
-  }
-
   const underlyingParamsWithVarying =
     varyParamsAccumulator !== null
       ? createVaryingParams(
@@ -463,12 +465,30 @@ function createRuntimePrerenderParams(
   const result = makeUntrackedParams(underlyingParamsWithVarying)
   const { stagedRendering } = workUnitStore
   if (!stagedRendering) {
+    // If there's no staging, we're in a prospective runtime prerender,
+    // and it doesn't matter when params resolve.
     return result
   }
+
+  // Semantically, we should resolve static params in the static stage,
+  // but we need to recover a param-less shell, so we resolve all params
+  // (even root params) in the runtime stage instead.
+  if (!stagedRendering.hasShells || isEmptyParams(underlyingParams)) {
+    return result
+  }
+  // TODO(app-shells): we're inconsistent in using `asyncApiPromises`,
+  // we should probably just do that everywhere
   const stage = isRuntimePrefetchable
     ? RenderStage.EarlyRuntime
     : RenderStage.Runtime
   return stagedRendering.waitForStage(stage).then(() => result)
+}
+
+function isEmptyParams(params: Params): boolean {
+  for (const _paramKey in params) {
+    return false
+  }
+  return true
 }
 
 function hasFallbackRouteParams(

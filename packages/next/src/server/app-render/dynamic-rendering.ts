@@ -38,7 +38,11 @@ import {
   workUnitAsyncStorage,
 } from './work-unit-async-storage.external'
 import { workAsyncStorage } from '../app-render/work-async-storage.external'
-import { makeHangingPromise, getRuntimeStage } from '../dynamic-rendering-utils'
+import {
+  makeHangingPromise,
+  getRuntimeStage,
+  ShellDataKind,
+} from '../dynamic-rendering-utils'
 import {
   METADATA_BOUNDARY_NAME,
   VIEWPORT_BOUNDARY_NAME,
@@ -572,8 +576,12 @@ export function createHangingInputAbortSignal(
           workUnitStore.stagedRendering
         ) {
           const { stagedRendering } = workUnitStore
+          // Pessimistically act as if this is going to be excluded, i.e. wait until
+          // the (non-shell) runtime stage.
+          // TODO(app-shells): not sure about this
+          const dataKind = ShellDataKind.Exclude
           stagedRendering
-            .waitForStage(getRuntimeStage(stagedRendering))
+            .waitForStage(getRuntimeStage(stagedRendering, dataKind))
             .then(() => scheduleOnNextTick(() => controller.abort()))
         } else {
           scheduleOnNextTick(() => controller.abort())

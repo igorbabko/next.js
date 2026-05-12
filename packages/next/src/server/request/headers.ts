@@ -21,6 +21,7 @@ import {
 import { StaticGenBailoutError } from '../../client/components/static-generation-bailout'
 import {
   delayUntilRuntimeStage,
+  ShellDataKind,
   makeDevtoolsIOAwarePromise,
   makeHangingPromise,
 } from '../dynamic-rendering-utils'
@@ -134,6 +135,7 @@ export function headers(): Promise<ReadonlyHeaders> {
         case 'prerender-runtime':
           return delayUntilRuntimeStage(
             workUnitStore,
+            ShellDataKind.Include, // headers are allowed in shells
             makeUntrackedHeaders(workUnitStore.headers)
           )
         case 'private-cache':
@@ -226,7 +228,7 @@ function makeUntrackedHeadersWithDevWarnings(
   const promise = makeDevtoolsIOAwarePromise(
     underlyingHeaders,
     requestStore,
-    RenderStage.Runtime
+    RenderStage.ShellRuntime
   )
 
   const proxiedPromise = instrumentHeadersPromiseWithDevWarnings(promise, route)

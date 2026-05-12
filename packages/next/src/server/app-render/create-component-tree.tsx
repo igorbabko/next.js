@@ -42,7 +42,7 @@ import {
   isNextjsBuiltinFilePath,
 } from './segment-explorer-path'
 import type { AppSegmentConfig } from '../../build/segment-config/app/app-segment-config'
-import { RenderStage, type StagedRenderingController } from './staged-rendering'
+import type { StagedRenderingController } from './staged-rendering'
 
 /**
  * Use the provided loader tree to create the React Component tree.
@@ -1305,10 +1305,10 @@ function createSeedData(
 ): CacheNodeSeedData {
   const createElement = ctx.componentMod.createElement
 
-  // When this segment is NOT runtime-prefetchable, delay it until the Static
+  // When this segment is NOT runtime-prefetchable, delay it until the [Shell]Static
   // stage by wrapping the node in a promise. This allows runtime-prefetchable
-  // segments (the lower tree) to render first during EarlyStatic, so their
-  // runtime data resolves in EarlyRuntime where sync IO can be checked.
+  // segments (the lower tree) to render first during [Shell]EarlyStatic, so their
+  // runtime data resolves in [Shell]EarlyRuntime where sync IO can be checked.
   // React will suspend on the thenable and resume when the stage advances.
   if (!isRuntimePrefetchable) {
     const workUnitStore = workUnitAsyncStorage.getStore()
@@ -1321,7 +1321,7 @@ function createSeedData(
           if (stagedRendering) {
             const deferredRsc = rsc
             rsc = stagedRendering
-              .waitForStage(RenderStage.Static)
+              .waitForStage(stagedRendering.getFirstLateStage())
               .then(() => deferredRsc)
           }
           break

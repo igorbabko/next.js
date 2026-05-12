@@ -21,7 +21,7 @@ import type { WorkStore } from './work-async-storage.external'
 import { NEXT_HMR_REFRESH_HASH_COOKIE } from '../../client/components/app-router-headers'
 import { InvariantError } from '../../shared/lib/invariant-error'
 import type { StagedRenderingController } from './staged-rendering'
-import { RenderStage } from './staged-rendering'
+import { isEarlyRenderStage } from './staged-rendering'
 import type { ValidationBoundaryTracking } from './instant-validation/boundary-tracking'
 import type { InstantValidationSampleTracking } from './instant-validation/instant-samples'
 
@@ -129,10 +129,7 @@ export type AsyncApiPromises = {
 export function isInEarlyRenderStage(requestStore: RequestStore): boolean {
   const stagedRendering = requestStore.stagedRendering
   if (stagedRendering) {
-    return (
-      stagedRendering.currentStage === RenderStage.EarlyStatic ||
-      stagedRendering.currentStage === RenderStage.EarlyRuntime
-    )
+    return isEarlyRenderStage(stagedRendering.currentStage)
   }
   return false
 }
@@ -193,14 +190,6 @@ export interface PrerenderStoreModernRuntime
   readonly headers: RequestStore['headers']
   readonly cookies: RequestStore['cookies']
   readonly draftMode: RequestStore['draftMode']
-
-  /**
-   * When true, `await params` and `await searchParams` both return hanging
-   * promises — segments that depend on either suspend, producing the App
-   * Shell of the route. Set by an App Shell prefetch request
-   * (NEXT_ROUTER_PREFETCH_HEADER === '3').
-   */
-  readonly forceOmitParams: boolean
 }
 
 export interface RevalidateStore {

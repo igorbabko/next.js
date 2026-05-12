@@ -19,7 +19,6 @@ import { createDedupedByCallsiteServerErrorLoggerDev } from '../create-deduped-b
 import { StaticGenBailoutError } from '../../client/components/static-generation-bailout'
 import { DynamicServerError } from '../../client/components/hooks-server-context'
 import { InvariantError } from '../../shared/lib/invariant-error'
-import { delayUntilRuntimeStage } from '../dynamic-rendering-utils'
 import { ReflectAdapter } from '../web/spec-extension/adapters/reflect'
 import { applyOwnerStack } from '../dynamic-rendering-utils'
 
@@ -33,12 +32,6 @@ export function draftMode(): Promise<DraftMode> {
   }
 
   switch (workUnitStore.type) {
-    case 'prerender-runtime':
-      // TODO(runtime-ppr): does it make sense to delay this? normally it's always microtasky
-      return delayUntilRuntimeStage(
-        workUnitStore,
-        createOrGetCachedDraftMode(workUnitStore.draftMode, workStore)
-      )
     case 'request':
       return createOrGetCachedDraftMode(workUnitStore.draftMode, workStore)
 
@@ -60,6 +53,7 @@ export function draftMode(): Promise<DraftMode> {
     // Otherwise, we fall through to providing an empty draft mode.
     // eslint-disable-next-line no-fallthrough
     case 'prerender':
+    case 'prerender-runtime':
     case 'prerender-ppr':
     case 'prerender-legacy':
       // Return empty draft mode

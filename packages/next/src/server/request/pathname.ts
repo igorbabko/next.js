@@ -17,6 +17,7 @@ import {
 } from '../app-render/work-unit-async-storage.external'
 import {
   delayUntilRuntimeStage,
+  ShellDataKind,
   makeHangingPromise,
 } from '../dynamic-rendering-utils'
 import { InvariantError } from '../../shared/lib/invariant-error'
@@ -55,12 +56,21 @@ export function createServerPathnameForMetadata(
         throw new InvariantError(
           'createServerPathnameForMetadata should not be called inside generateStaticParams.'
         )
-      case 'prerender-runtime':
+      case 'prerender-runtime': {
+        // TODO(app-shells): whether or not this is included here should depend on whether this route has params.
+        // if there's no params, it can be included.
+        // for now, we defensively exclude it to match the current pessimistic behavior of always resolving in the runtime stage
+        // (i.e. assuming that we have non-static params in the pathname)
+        const dataKind = ShellDataKind.Exclude
+        // TODO(restart-on-cache-miss): this doesn't need to be delayed if there's no params (or they're all static)
         return delayUntilRuntimeStage(
           workUnitStore,
+          dataKind,
           createRenderPathname(underlyingPathname)
         )
+      }
       case 'request':
+        // TODO(restart-on-cache-miss): this should be delayed in dev if there's non-static params
         return createRenderPathname(underlyingPathname)
       default:
         workUnitStore satisfies never
