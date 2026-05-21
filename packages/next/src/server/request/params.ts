@@ -390,19 +390,8 @@ function createStaticPrerenderParams(
   prerenderStore: StaticPrerenderStore,
   varyParamsAccumulator: VaryParamsAccumulator | null
 ): Promise<Params> {
-  const underlyingParamsWithVarying =
-    varyParamsAccumulator !== null
-      ? createVaryingParams(
-          varyParamsAccumulator,
-          underlyingParams,
-          optionalCatchAllParamName
-        )
-      : underlyingParams
-
   switch (prerenderStore.type) {
-    case 'prerender':
-    case 'prerender-client': {
-      // TODO(app-shells): implement shell generation for static prerenders
+    case 'prerender': {
       const fallbackParams = prerenderStore.fallbackRouteParams
       if (fallbackParams) {
         for (const key in underlyingParams) {
@@ -412,7 +401,50 @@ function createStaticPrerenderParams(
             // we are in cacheComponents mode we encode this as a promise that never
             // resolves.
             return makeHangingParams(
-              underlyingParamsWithVarying,
+              underlyingParams,
+              workStore,
+              prerenderStore
+            )
+          }
+        }
+      }
+
+      // Even if all params are static, we need to exclude them from the shell
+      // by delaying them to the static stage. This includes root params.
+      const { stagedRendering } = prerenderStore
+      if (
+        stagedRendering &&
+        stagedRendering.hasShells &&
+        !isEmptyParams(underlyingParams)
+      ) {
+        const underlyingParamsWithVarying =
+          varyParamsAccumulator !== null
+            ? createVaryingParams(
+                varyParamsAccumulator,
+                underlyingParams,
+                optionalCatchAllParamName
+              )
+            : underlyingParams
+
+        return stagedRendering.delayUntilStage(
+          RenderStage.Static,
+          '`params`',
+          underlyingParamsWithVarying
+        )
+      }
+      break
+    }
+    case 'prerender-client': {
+      const fallbackParams = prerenderStore.fallbackRouteParams
+      if (fallbackParams) {
+        for (const key in underlyingParams) {
+          if (fallbackParams.has(key)) {
+            // This params object has one or more fallback params, so we need
+            // to consider the awaiting of this params object "dynamic". Since
+            // we are in cacheComponents mode we encode this as a promise that never
+            // resolves.
+            return makeHangingParams(
+              underlyingParams,
               workStore,
               prerenderStore
             )
@@ -427,7 +459,7 @@ function createStaticPrerenderParams(
         for (const key in underlyingParams) {
           if (fallbackParams.has(key)) {
             return makeErroringParams(
-              underlyingParamsWithVarying,
+              underlyingParams,
               fallbackParams,
               workStore,
               prerenderStore
@@ -443,6 +475,14 @@ function createStaticPrerenderParams(
       prerenderStore satisfies never
   }
 
+  const underlyingParamsWithVarying =
+    varyParamsAccumulator !== null
+      ? createVaryingParams(
+          varyParamsAccumulator,
+          underlyingParams,
+          optionalCatchAllParamName
+        )
+      : underlyingParams
   return makeUntrackedParams(underlyingParamsWithVarying)
 }
 

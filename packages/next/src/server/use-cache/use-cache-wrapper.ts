@@ -2233,7 +2233,8 @@ export async function cache(
           rdcResult.readRootParamNames.size > 0
         ) {
           switch (workUnitStore.type) {
-            case 'request': {
+            case 'request':
+            case 'prerender': {
               // For 'request', assume we're recovering a static shell --
               // runtime shells get handled elsewhere
               await stagedRendering.waitForStage(
@@ -2241,6 +2242,7 @@ export async function cache(
               )
               break
             }
+
             case 'prerender-runtime': {
               // If we're rendering with shells, this is when params should resolve
               await stagedRendering.waitForStage(
@@ -2248,7 +2250,6 @@ export async function cache(
               )
               break
             }
-            case 'prerender':
             case 'cache':
             case 'private-cache':
             case 'prerender-legacy':

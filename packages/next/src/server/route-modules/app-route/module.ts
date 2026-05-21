@@ -513,6 +513,7 @@ export class AppRouteRouteModule extends RouteModule<
               implicitTags,
               renderSignal: prospectiveController.signal,
               controller: prospectiveController,
+              stagedRendering: null,
               cacheSignal,
               // During prospective render we don't use a controller
               // because we need to let all caches fill.
@@ -612,6 +613,7 @@ export class AppRouteRouteModule extends RouteModule<
             implicitTags,
             renderSignal: finalController.signal,
             controller: finalController,
+            stagedRendering: null,
             cacheSignal: null,
             dynamicTracking,
             allowEmptyStaticShell: false,

@@ -83,7 +83,33 @@ export function getRootParam(paramName: string): Promise<ParamValue> {
       workUnitStore.readRootParamNames.add(paramName)
       return Promise.resolve(workUnitStore.rootParams[paramName])
     }
-    case 'prerender':
+    case 'prerender': {
+      const { stagedRendering, fallbackRouteParams } = workUnitStore
+      if (stagedRendering && stagedRendering.hasShells) {
+        // If the root param is a fallback param, we don't have a value to return
+        if (fallbackRouteParams && fallbackRouteParams.has(paramName)) {
+          return makeHangingPromise<ParamValue>(
+            workUnitStore.renderSignal,
+            workStore.route,
+            apiName
+          )
+        }
+        // Otherwise, delay it until the static stage
+        return createRootParamPromiseForShellRender(
+          stagedRendering,
+          getStaticStage(stagedRendering, ShellDataKind.Exclude),
+          apiName,
+          paramName,
+          workUnitStore.rootParams[paramName]
+        )
+      }
+      return createPrerenderRootParamPromise(
+        paramName,
+        workStore,
+        workUnitStore,
+        apiName
+      )
+    }
     case 'prerender-ppr':
     case 'prerender-legacy': {
       return createPrerenderRootParamPromise(
