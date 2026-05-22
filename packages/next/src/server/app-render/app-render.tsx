@@ -941,7 +941,8 @@ async function generateStagedDynamicFlightRenderResultWeb(
     null, // no aborting
     null, // no abandoning
     shouldTrackSyncIO,
-    true // has shells
+    true, // has shells
+    null // no final stage
   )
 
   // Initialize stale time tracking on the request store.
@@ -1110,7 +1111,8 @@ async function generateStagedDynamicFlightRenderResultNode(
     null, // no aborting
     null, // no abandoning
     shouldTrackSyncIO,
-    true // has shells
+    true, // has shells
+    null // no final stage
   )
 
   // Initialize stale time tracking on the request store.
@@ -1311,7 +1313,8 @@ async function stagedRenderWithoutCachesInDevWeb(
     null, // no aborting
     null, // no abandoning
     false, // do not track sync IO (we don't have reliable stages)
-    false // no shells (because there's no validation here)
+    false, // no shells (because there's no validation here),
+    null // no final stage
   )
 
   const environmentName = () => {
@@ -1369,7 +1372,8 @@ async function stagedRenderWithoutCachesInDevNode(
     null, // no aborting
     null, // no abandoning
     false, // do not track sync IO (we don't have reliable stages)
-    false // no shells (because there's no validation here)
+    false, // no shells (because there's no validation here)
+    null // no final stage
   )
 
   const environmentName = () => {
@@ -1922,7 +1926,9 @@ async function finalRuntimeServerPrerender(
     finalServerController.signal,
     null, // no abandoning
     true, // track sync IO
-    true // has shells
+    true, // has shells
+    // final stage -- we only reach the runtime stage if we're doing a rewindable render
+    shellByteLengthDeferred ? RenderStage.Runtime : RenderStage.ShellRuntime
   )
 
   const varyParamsAccumulator = createResponseVaryParamsAccumulator()
@@ -3795,7 +3801,8 @@ async function renderToStream(
             null, // no aborting
             null, // no abandoning
             shouldTrackSyncIO,
-            true // has shells
+            true, // has shells
+            null // no final stage
           )
 
           requestStore.stale = INFINITE_CACHE
@@ -3936,7 +3943,8 @@ async function renderToStream(
             null, // no aborting
             null, // no abandoning
             shouldTrackSyncIO,
-            true // has shells
+            true, // has shells
+            null // no final stage
           )
           // stageController.debug = true // DEBUG
 
@@ -4744,7 +4752,8 @@ async function renderWithRestartOnCacheMissInDevWeb(
     initialAbandonController,
     true, // track sync IO
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
   // initialStageController.debug = true
 
@@ -4911,7 +4920,8 @@ async function renderWithRestartOnCacheMissInDevWeb(
     null, // no abandoning
     true, // track sync IO
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
   // finalStageController.debug = true
 
@@ -5073,7 +5083,8 @@ async function renderWithRestartOnCacheMissInDevNode(
     initialAbandonController,
     true, // track sync IO,
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
 
   requestStore.prerenderResumeDataCache = prerenderResumeDataCache
@@ -5234,7 +5245,8 @@ async function renderWithRestartOnCacheMissInDevNode(
     null, // no abandoning
     true, // track sync IO
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
 
   // We've filled the caches, so now we can render as usual,
@@ -6697,7 +6709,8 @@ async function renderWithRestartOnCacheMissInValidation(
     initialAbandonController,
     true, // track sync IO
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
 
   requestStore.prerenderResumeDataCache = prerenderResumeDataCache
@@ -6810,7 +6823,8 @@ async function renderWithRestartOnCacheMissInValidation(
     null, // no abandoning
     true, // track sync IO
     // TODO(app-shells): implement validation
-    false // no shells
+    false, // no shells
+    null // no final stage
   )
 
   requestStore.prerenderResumeDataCache = null
@@ -7910,9 +7924,9 @@ async function prerenderToStream(
         finalServerRenderController.signal,
         null, // no abandoning
         true, // track sync IO
-        true // has fallbacks
+        true, // has fallbacks
+        RenderStage.Static // final stage
       )
-      // finalStageController.debug = true // DEBUG
 
       const finalServerPayloadPrerenderStore: PrerenderStore = {
         type: 'prerender',

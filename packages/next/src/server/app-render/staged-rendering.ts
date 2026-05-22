@@ -135,7 +135,8 @@ export class StagedRenderingController {
     private abortSignal: AbortSignal | null,
     private abandonController: AbortController | null,
     private shouldTrackSyncIO: boolean,
-    public readonly hasShells: boolean
+    public readonly hasShells: boolean,
+    public readonly finalStage: AdvanceableRenderStage | null
   ) {
     if (abortSignal) {
       abortSignal.addEventListener(
@@ -328,6 +329,11 @@ export class StagedRenderingController {
   }
 
   advanceStage(targetStage: AdvanceableRenderStage) {
+    if (this.finalStage && targetStage > this.finalStage) {
+      throw new InvariantError(
+        `Attempted to advance to stage ${RenderStage[targetStage]} but the render is limited to ${RenderStage[this.finalStage]}`
+      )
+    }
     if (this.debug) {
       console.log(
         `====================== ${RenderStage[this.currentStage]} -> ${RenderStage[targetStage]} ======================`
