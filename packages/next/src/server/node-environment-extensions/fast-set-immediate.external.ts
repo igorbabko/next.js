@@ -187,6 +187,20 @@ export function expectNoPendingImmediates() {
   }
 }
 
+export function expectFastSetImmediate(caller: string) {
+  if (process.env.NEXT_RUNTIME === 'edge') {
+    throw new InvariantError(
+      'expectFastSetImmediate cannot be called in the edge runtime'
+    )
+  } else {
+    if (currentExecution === null) {
+      throw new InvariantError(
+        `${caller} expects to run with fast-set-immediate enabled.`
+      )
+    }
+  }
+}
+
 export { originalSetImmediate as unpatchedSetImmediate }
 
 /**

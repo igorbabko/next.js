@@ -93,18 +93,9 @@ export function trackStaleTime(
  * chunk into the Flight stream. This also allows the prerender to complete if
  * no other work is pending.
  *
- * Flight's internal work gets scheduled as a microtask when we close the
- * iterable. We need to ensure Flight's pending queues are emptied before this
- * function returns, because the caller will abort the prerender immediately
- * after. We can't use a macrotask (that would allow dynamic IO to sneak into
- * the response), so we use microtasks instead. The exact number of awaits
- * isn't important as long as we wait enough ticks for Flight to finish writing.
+ * NOTE: This function does not wait for the resulting flight chunks to flush.
+ * The appropriate wait time depends on whether we're using a prerender or a render.
  */
-export async function finishStaleTimeTracking(
-  iterable: StaleTimeIterable
-): Promise<void> {
+export function finishStaleTimeTracking(iterable: StaleTimeIterable): void {
   iterable.close()
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
 }
