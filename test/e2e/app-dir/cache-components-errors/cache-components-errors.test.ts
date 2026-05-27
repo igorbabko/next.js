@@ -7286,7 +7286,8 @@ Learn more: https://nextjs.org/docs/messages/blocking-route`
           `)
         })
       } else {
-        it('should error the build if IO is accessed in a Client Component', async () => {
+        // Will be fixed when https://github.com/facebook/react/pull/36544 is synced
+        it.skip('should error the build if IO is accessed in a Client Component', async () => {
           try {
             await prerender(pathname)
           } catch {
