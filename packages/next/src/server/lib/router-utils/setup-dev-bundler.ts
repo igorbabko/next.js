@@ -6,6 +6,7 @@ import type { RoutesManifest } from '../../../build'
 import type { MiddlewareRouteMatch } from '../../../shared/lib/router/utils/middleware-route-matcher'
 import type { PropagateToWorkersField } from './types'
 import type { NextJsHotReloaderInterface } from '../../dev/hot-reloader-types'
+import type { RouteDefinition } from '../../route-definitions/route-definition'
 
 import { createDefineEnv } from '../../../build/swc'
 import { installBindings } from '../../../build/swc/install-bindings'
@@ -29,8 +30,12 @@ import { sortByPageExts } from '../../../build/sort-by-page-exts'
 import { verifyAndRunTypeScript } from '../../../lib/verify-typescript-setup'
 import { verifyPartytownSetup } from '../../../lib/verify-partytown-setup'
 import { getNamedRouteRegex } from '../../../shared/lib/router/utils/route-regex'
-import { buildDataRoute } from './build-data-route'
+import {
+  addLocalePrefixToDataRouteRegex,
+  buildDataRoute,
+} from './build-data-route'
 import { getRouteMatcher } from '../../../shared/lib/router/utils/route-matcher'
+import { normalizePagePath } from '../../../shared/lib/page-path/normalize-page-path'
 import { normalizePathSep } from '../../../shared/lib/page-path/normalize-path-sep'
 import { createClientRouterFilter } from '../../../lib/create-client-router-filter'
 import { absolutePathToPage } from '../../../shared/lib/page-path/absolute-path-to-page'
@@ -102,6 +107,7 @@ import {
 import { ensureLeadingSlash } from '../../../shared/lib/page-path/ensure-leading-slash'
 import { Lockfile, type DevServerInfo } from '../../../build/lockfile'
 import { deobfuscateText } from '../../../shared/lib/magic-identifier'
+import { RouteKind } from '../../route-kind'
 
 export type SetupOpts = {
   renderServer: LazyRenderServerInstance
@@ -338,11 +344,12 @@ async function startWatcher(
 
   opts.fsChecker.ensureCallback(async function ensure(item) {
     if (item.type === 'appFile' || item.type === 'pageFile') {
+      const definition = item.route
       await hotReloader.ensurePage({
         clientOnly: false,
-        page: item.itemPath,
+        page: definition?.page ?? item.itemPath,
         isApp: item.type === 'appFile',
-        definition: undefined,
+        definition,
       })
     }
   })
@@ -525,11 +532,21 @@ async function startWatcher(
           continue
         }
 
+        const fileExists = fs.existsSync(fileName)
         if (
-          meta?.accuracy === undefined ||
-          !validFileMatcher.isPageFile(fileName)
+          !validFileMatcher.isPageFile(fileName) ||
+          (meta?.accuracy === undefined && !fileExists)
         ) {
           continue
+        }
+        if (fileExists) {
+          try {
+            if (!fs.statSync(fileName).isFile()) {
+              continue
+            }
+          } catch {
+            continue
+          }
         }
 
         const isAppPath = Boolean(
@@ -768,7 +785,6 @@ async function startWatcher(
           hotReloader.setHmrServerError(new Error(errorMessage))
         } else if (numConflicting === 0) {
           hotReloader.clearHmrServerError()
-          await propagateServerField(opts, 'reloadMatchers', undefined)
         }
       }
 
@@ -965,6 +981,53 @@ async function startWatcher(
         serverFields.appPathRoutes
       )
 
+      const pageRouteDefinitions = [
+        ...pageRoutes.map(({ route, filePath }) => ({
+          kind: RouteKind.PAGES,
+          pathname: route,
+          page: route,
+          bundlePath: path.posix.join('pages', normalizePagePath(route)),
+          filename: filePath,
+          ...(opts.nextConfig.i18n ? { i18n: {} } : undefined),
+        })),
+        ...pageApiRoutes.map(({ route, filePath }) => ({
+          kind: RouteKind.PAGES_API,
+          pathname: route,
+          page: route,
+          bundlePath: path.posix.join('pages', normalizePagePath(route)),
+          filename: filePath,
+          ...(opts.nextConfig.i18n ? { i18n: {} } : undefined),
+        })),
+      ] as RouteDefinition[]
+
+      const appRouteDefinitions = [
+        ...appRoutes.map(({ route, filePath }) => {
+          const routeAppPaths = appPaths[route] ?? [route]
+          const page = routeAppPaths[0]
+          return {
+            kind: RouteKind.APP_PAGE,
+            pathname: route,
+            page,
+            bundlePath: path.posix.join('app', normalizePagePath(page)),
+            filename: filePath,
+            appPaths: routeAppPaths,
+          }
+        }),
+        ...appRouteHandlers.map(({ route, filePath }) => {
+          const page = appPaths[route]?.[0] ?? route
+          return {
+            kind: RouteKind.APP_ROUTE,
+            pathname: route,
+            page,
+            bundlePath: path.posix.join('app', normalizePagePath(page)),
+            filename: filePath,
+          }
+        }),
+      ] as RouteDefinition[]
+
+      opts.fsChecker.setRouteDefinitions('pageFile', pageRouteDefinitions)
+      opts.fsChecker.setRouteDefinitions('appFile', appRouteDefinitions)
+
       // TODO: pass this to fsChecker/next-dev-server?
       serverFields.middleware = middlewareMatchers
         ? {
@@ -1066,9 +1129,9 @@ async function startWatcher(
               // upstream builder that relies on this
               re: opts.nextConfig.i18n
                 ? new RegExp(
-                    route.dataRouteRegex.replace(
-                      `/development/`,
-                      `/development/(?<nextLocale>[^/]+?)/`
+                    addLocalePrefixToDataRouteRegex(
+                      route.dataRouteRegex,
+                      'development'
                     )
                   )
                 : new RegExp(route.dataRouteRegex),
@@ -1081,12 +1144,6 @@ async function startWatcher(
         // For Turbopack ADDED_PAGE and REMOVED_PAGE are implemented in hot-reloader-turbopack.ts
         // in order to avoid a race condition where ADDED_PAGE and REMOVED_PAGE are sent before Turbopack picked up the file change.
         if (!opts.turbo) {
-          // Reload the matchers. The filesystem would have been written to,
-          // and the matchers need to re-scan it to update the router.
-          // Reloading the matchers should happen before `ADDED_PAGE` or `REMOVED_PAGE` is sent over the websocket
-          // otherwise it sends the event too early.
-          await propagateServerField(opts, 'reloadMatchers', undefined)
-
           if (
             !prevSortedRoutes?.every((val, idx) => val === sortedRoutes[idx])
           ) {

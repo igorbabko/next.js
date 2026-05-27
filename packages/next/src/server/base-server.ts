@@ -50,9 +50,7 @@ import { format as formatUrl } from 'url'
 import { formatHostname } from './lib/format-hostname'
 import { isRSCRequestHeader } from './lib/is-rsc-request'
 import {
-  APP_PATHS_MANIFEST,
   NEXT_BUILTIN_DOCUMENT,
-  PAGES_MANIFEST,
   STATIC_STATUS_PAGES,
   UNDERSCORE_NOT_FOUND_ROUTE,
   UNDERSCORE_NOT_FOUND_ROUTE_ENTRY,
@@ -90,17 +88,8 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_INSTANT_TEST_COOKIE,
 } from '../client/components/app-router-headers'
-import type {
-  MatchOptions,
-  RouteMatcherManager,
-} from './route-matcher-managers/route-matcher-manager'
 import { LocaleRouteNormalizer } from './normalizers/locale-route-normalizer'
-import { DefaultRouteMatcherManager } from './route-matcher-managers/default-route-matcher-manager'
-import { AppPageRouteMatcherProvider } from './route-matcher-providers/app-page-route-matcher-provider'
-import { AppRouteRouteMatcherProvider } from './route-matcher-providers/app-route-route-matcher-provider'
-import { PagesAPIRouteMatcherProvider } from './route-matcher-providers/pages-api-route-matcher-provider'
-import { PagesRouteMatcherProvider } from './route-matcher-providers/pages-route-matcher-provider'
-import { ServerManifestLoader } from './route-matcher-providers/helpers/manifest-loaders/server-manifest-loader'
+import { isAppPageRouteDefinition } from './route-definitions/app-page-route-definition'
 import {
   getTracer,
   isBubbledError,
@@ -420,8 +409,6 @@ export default abstract class Server<
     forceReload: boolean
   }): void
 
-  // TODO-APP: (wyattjoh): Make protected again. Used for turbopack in route-resolver.ts right now.
-  public readonly matchers: RouteMatcherManager
   protected readonly i18nProvider?: I18NProvider
   protected readonly localeNormalizer?: LocaleRouteNormalizer
 
@@ -604,19 +591,7 @@ export default abstract class Server<
     this.appPathRoutes = this.getAppPathRoutes()
     this.interceptionRoutePatterns = this.getinterceptionRoutePatterns()
 
-    // Configure the routes.
-    this.matchers = this.getRouteMatchers()
-
-    // Start route compilation. We don't wait for the routes to finish loading
-    // because we use the `waitTillReady` promise below in `handleRequest` to
-    // wait. Also we can't `await` in the constructor.
-    void this.matchers.reload()
-
     this.setAssetPrefix(assetPrefix)
-  }
-
-  protected reloadMatchers() {
-    return this.matchers.reload()
   }
 
   private handleRSCRequest: RouteHandler<ServerRequest, ServerResponse> = (
@@ -797,54 +772,6 @@ export default abstract class Server<
     ServerResponse
   > = () => false
 
-  protected getRouteMatchers(): RouteMatcherManager {
-    // Create a new manifest loader that get's the manifests from the server.
-    const manifestLoader = new ServerManifestLoader((name) => {
-      switch (name) {
-        case PAGES_MANIFEST:
-          return this.getPagesManifest() ?? null
-        case APP_PATHS_MANIFEST:
-          return this.getAppPathsManifest() ?? null
-        default:
-          return null
-      }
-    })
-
-    // Configure the matchers and handlers.
-    const matchers: RouteMatcherManager = new DefaultRouteMatcherManager()
-
-    // Match pages under `pages/`.
-    matchers.push(
-      new PagesRouteMatcherProvider(
-        this.distDir,
-        manifestLoader,
-        this.i18nProvider
-      )
-    )
-
-    // Match api routes under `pages/api/`.
-    matchers.push(
-      new PagesAPIRouteMatcherProvider(
-        this.distDir,
-        manifestLoader,
-        this.i18nProvider
-      )
-    )
-
-    // If the app directory is enabled, then add the app matchers and handlers.
-    if (this.enabledDirectories.app) {
-      // Match app pages under `app/`.
-      matchers.push(
-        new AppPageRouteMatcherProvider(this.distDir, manifestLoader)
-      )
-      matchers.push(
-        new AppRouteRouteMatcherProvider(this.distDir, manifestLoader)
-      )
-    }
-
-    return matchers
-  }
-
   protected async instrumentationOnRequestError(
     ...args: Parameters<ServerOnInstrumentationRequestError>
   ) {
@@ -974,9 +901,6 @@ export default abstract class Server<
     parsedUrl?: NextUrlWithParsedQuery
   ): Promise<void> {
     try {
-      // Wait for the matchers to be ready.
-      await this.matchers.waitTillReady()
-
       // ensure cookies set in middleware are merged and
       // not overridden by API routes/getServerSideProps
       patchSetHeaderWithCookieSupport(
@@ -1176,9 +1100,7 @@ export default abstract class Server<
             hasValidParams: false,
           }
 
-          const match = await this.matchers.match(srcPathname, {
-            i18n: localeAnalysisResult,
-          })
+          const match = getRequestMeta(req, 'match')
 
           if (!pageIsDynamic && match) {
             // Update the source pathname to the matched page's pathname.
@@ -2523,13 +2445,20 @@ export default abstract class Server<
   ) {
     const { query, pathname } = ctx
 
-    const appPaths = this.getOriginalAppPaths(pathname)
+    const match = getRequestMeta(ctx.req, 'match')
+    const appPaths =
+      this.getOriginalAppPaths(pathname) ??
+      (match && isAppPageRouteDefinition(match.definition)
+        ? match.definition.appPaths
+        : null)
     const isAppPath = Array.isArray(appPaths)
 
     let page = pathname
     if (isAppPath) {
       // the last item in the array is the root page, if there are parallel routes
       page = appPaths[appPaths.length - 1]
+    } else if (match?.definition.kind === RouteKind.APP_ROUTE) {
+      page = match.definition.page
     }
 
     const result = await this.findPageComponents({
@@ -2540,8 +2469,9 @@ export default abstract class Server<
       isAppPath,
       sriEnabled: !!this.nextConfig.experimental.sri?.algorithm,
       appPaths,
-      // Ensuring for loading page component routes is done via the matcher.
-      shouldEnsure: false,
+      // Normal routed requests are ensured by the route match. Legacy custom
+      // server render methods bypass that path, so ensure when no match exists.
+      shouldEnsure: !match,
     })
     if (result) {
       getTracer().setRootSpanAttribute('next.route', pathname)
@@ -2601,54 +2531,33 @@ export default abstract class Server<
     }
     delete query[NEXT_RSC_UNION_QUERY]
 
-    const options: MatchOptions = {
-      i18n: this.i18nProvider?.fromRequest(req, pathname),
-    }
-
     const existingMatch = getRequestMeta(ctx.req, 'match')
-
-    let fastPath = true
-    // when a specific invoke-output is meant to be matched
-    // ensure a prior dynamic route/page doesn't take priority
     const invokeOutput = getRequestMeta(ctx.req, 'invokeOutput')
 
-    if (
-      (!this.minimalMode &&
-        typeof invokeOutput === 'string' &&
-        isDynamicRoute(invokeOutput || '') &&
-        invokeOutput !== existingMatch?.definition.pathname) ||
-      // Parallel routes are matched in `existingMatch` but since currently
-      // there can be multiple matches it's not guaranteed to be the right match
-      // therefor we need to opt-out of the fast path for parallel routes.
-      existingMatch?.definition.page.includes('/@')
-    ) {
-      fastPath = false
-    }
-
     try {
-      for await (const match of fastPath && existingMatch
-        ? [existingMatch]
-        : this.matchers.matchAll(pathname, options)) {
-        if (
+      if (existingMatch) {
+        const shouldSkipMatch =
           !this.minimalMode &&
           typeof invokeOutput === 'string' &&
           isDynamicRoute(invokeOutput || '') &&
-          invokeOutput !== match.definition.pathname
-        ) {
-          continue
-        }
+          invokeOutput !== existingMatch.definition.pathname
 
-        const result = await this.renderPageComponent(
-          {
-            ...ctx,
-            pathname: match.definition.pathname,
-            renderOpts: {
-              ...ctx.renderOpts,
-              params: match.params,
+        if (!shouldSkipMatch) {
+          const result = await this.renderPageComponent(
+            {
+              ...ctx,
+              pathname: existingMatch.definition.pathname,
+              renderOpts: {
+                ...ctx.renderOpts,
+                params: existingMatch.params,
+              },
             },
-          },
-          bubbleNoFallback
-        )
+            bubbleNoFallback
+          )
+          if (result !== false) return result
+        }
+      } else {
+        const result = await this.renderPageComponent(ctx, bubbleNoFallback)
         if (result !== false) return result
       }
 

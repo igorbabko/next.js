@@ -10,6 +10,8 @@ import type { UnwrapPromise } from '../../../lib/coalesced-function'
 import type { PatchMatcher } from '../../../shared/lib/router/utils/path-match'
 import type { MiddlewareRouteMatch } from '../../../shared/lib/router/utils/middleware-route-matcher'
 import type { __ApiPreviewProps } from '../../api-utils'
+import type { Params } from '../../request/params'
+import type { RouteDefinition } from '../../route-definitions/route-definition'
 
 import path from 'path'
 import fs from 'fs/promises'
@@ -18,10 +20,13 @@ import setupDebug from 'next/dist/compiled/debug'
 import { LRUCache } from '../lru-cache'
 import loadCustomRoutes, { type Rewrite } from '../../../lib/load-custom-routes'
 import { modifyRouteRegex } from '../../../lib/redirect-status'
+import { isAPIRoute } from '../../../lib/is-api-route'
+import { isAppPageRoute } from '../../../lib/is-app-page-route'
+import { isAppRouteRoute } from '../../../lib/is-app-route-route'
 import { FileType, fileExists } from '../../../lib/file-exists'
 import { recursiveReadDir } from '../../../lib/recursive-readdir'
+import { addLocalePrefixToDataRouteRegex } from './build-data-route'
 import { isDynamicRoute } from '../../../shared/lib/router/utils'
-import { escapeStringRegexp } from '../../../shared/lib/escape-regexp'
 import { getPathMatch } from '../../../shared/lib/router/utils/path-match'
 import {
   getNamedRouteRegex,
@@ -34,6 +39,8 @@ import { removePathPrefix } from '../../../shared/lib/router/utils/remove-path-p
 import { getMiddlewareRouteMatcher } from '../../../shared/lib/router/utils/middleware-route-matcher'
 import {
   APP_PATH_ROUTES_MANIFEST,
+  APP_PATHS_MANIFEST,
+  BLOCKED_PAGES,
   BUILD_ID_FILE,
   FUNCTIONS_CONFIG_MANIFEST,
   MIDDLEWARE_MANIFEST,
@@ -46,6 +53,9 @@ import { normalizeMetadataRoute } from '../../../lib/metadata/get-metadata-route
 import { RSCPathnameNormalizer } from '../../normalizers/request/rsc'
 import { encodeURIPath } from '../../../shared/lib/encode-uri-path'
 import { isMetadataRouteFile } from '../../../lib/metadata/is-metadata-route'
+import { PagesNormalizers } from '../../normalizers/built/pages'
+import { AppNormalizers } from '../../normalizers/built/app'
+import { RouteKind } from '../../route-kind'
 
 export type FsOutput = {
   type:
@@ -61,6 +71,14 @@ export type FsOutput = {
   fsPath?: string
   itemsRoot?: string
   locale?: string
+  route?: RouteDefinition
+  params?: Params
+}
+
+type FilesystemRouteDefinition = RouteDefinition & {
+  i18n?: {
+    locale?: string
+  }
 }
 
 const debug = setupDebug('next:router-server:filesystem')
@@ -144,6 +162,10 @@ export async function setupFsCheck(opts: {
   // /icon.png -> .../app/icon.png
   const staticMetadataFiles = new Map<string, string>()
   let dynamicRoutes: FilesystemDynamicRoute[] = []
+  const routeDefinitions = {
+    appFile: new Map<string, FilesystemRouteDefinition[]>(),
+    pageFile: new Map<string, FilesystemRouteDefinition[]>(),
+  }
 
   let middlewareMatcher:
     | ReturnType<typeof getMiddlewareRouteMatcher>
@@ -165,6 +187,38 @@ export async function setupFsCheck(opts: {
   }
   let buildId = 'development'
   let previewProps: __ApiPreviewProps
+
+  const setRouteDefinition = (
+    type: 'appFile' | 'pageFile',
+    pathname: string,
+    definition: FilesystemRouteDefinition
+  ) => {
+    const definitions = routeDefinitions[type].get(pathname)
+    if (definitions) {
+      definitions.push(definition)
+    } else {
+      routeDefinitions[type].set(pathname, [definition])
+    }
+  }
+
+  const getRouteDefinition = (
+    type: 'appFile' | 'pageFile',
+    itemPath: string,
+    locale: string | undefined
+  ) => {
+    const definitions = routeDefinitions[type].get(itemPath)
+    if (!definitions?.length) return undefined
+
+    if (type === 'pageFile') {
+      return (
+        definitions.find((definition) => definition.i18n?.locale === locale) ??
+        definitions.find((definition) => !definition.i18n?.locale) ??
+        definitions[0]
+      )
+    }
+
+    return definitions[0]
+  }
 
   if (!opts.dev) {
     const buildIdPath = path.join(opts.dir, opts.config.distDir, BUILD_ID_FILE)
@@ -229,6 +283,11 @@ export async function setupFsCheck(opts: {
       FUNCTIONS_CONFIG_MANIFEST
     )
     const pagesManifestPath = path.join(distDir, 'server', PAGES_MANIFEST)
+    const appPathsManifestPath = path.join(
+      distDir,
+      'server',
+      APP_PATHS_MANIFEST
+    )
     const appRoutesManifestPath = path.join(distDir, APP_PATH_ROUTES_MANIFEST)
 
     const routesManifest = JSON.parse(
@@ -252,25 +311,84 @@ export async function setupFsCheck(opts: {
     const pagesManifest = JSON.parse(
       await fs.readFile(pagesManifestPath, 'utf8')
     )
+    const appPathsManifest = JSON.parse(
+      await fs.readFile(appPathsManifestPath, 'utf8').catch(() => '{}')
+    )
     const appRoutesManifest = JSON.parse(
       await fs.readFile(appRoutesManifestPath, 'utf8').catch(() => '{}')
     )
+    const pagesNormalizers = new PagesNormalizers(distDir)
+    const appNormalizers = new AppNormalizers(distDir)
 
     for (const key of Object.keys(pagesManifest)) {
+      const localeResult = opts.config.i18n
+        ? normalizeLocalePath(key, opts.config.i18n.locales)
+        : { pathname: key, detectedLocale: undefined }
+
       // ensure the non-locale version is in the set
       if (opts.config.i18n) {
-        pageFiles.add(
-          normalizeLocalePath(key, opts.config.i18n.locales).pathname
-        )
+        pageFiles.add(localeResult.pathname)
       } else {
         pageFiles.add(key)
       }
+
+      if (!isAPIRoute(key) && BLOCKED_PAGES.includes(localeResult.pathname)) {
+        continue
+      }
+
+      setRouteDefinition('pageFile', localeResult.pathname, {
+        kind: isAPIRoute(key) ? RouteKind.PAGES_API : RouteKind.PAGES,
+        pathname: localeResult.pathname,
+        page: key,
+        bundlePath: pagesNormalizers.bundlePath.normalize(key),
+        filename: pagesNormalizers.filename.normalize(pagesManifest[key]),
+        ...(opts.config.i18n
+          ? {
+              i18n: {
+                locale: localeResult.detectedLocale,
+              },
+            }
+          : undefined),
+      } as FilesystemRouteDefinition)
     }
     for (const key of Object.keys(appRoutesManifest)) {
       appFiles.add(appRoutesManifest[key])
     }
 
-    const escapedBuildId = escapeStringRegexp(buildId)
+    const appPages = Object.keys(appPathsManifest).filter((page) =>
+      isAppPageRoute(page)
+    )
+    const allAppPaths: Record<string, string[]> = {}
+    for (const page of appPages) {
+      const pathname = appNormalizers.pathname.normalize(page)
+      if (pathname in allAppPaths) allAppPaths[pathname].push(page)
+      else allAppPaths[pathname] = [page]
+    }
+    for (const [pathname, appPaths] of Object.entries(allAppPaths)) {
+      const page = appPaths[0]
+      setRouteDefinition('appFile', pathname, {
+        kind: RouteKind.APP_PAGE,
+        pathname,
+        page,
+        bundlePath: appNormalizers.bundlePath.normalize(page),
+        filename: appNormalizers.filename.normalize(appPathsManifest[page]),
+        appPaths,
+      } as FilesystemRouteDefinition)
+    }
+
+    const appRouteHandlers = Object.keys(appPathsManifest).filter((page) =>
+      isAppRouteRoute(page)
+    )
+    for (const page of appRouteHandlers) {
+      const pathname = appNormalizers.pathname.normalize(page)
+      setRouteDefinition('appFile', pathname, {
+        kind: RouteKind.APP_ROUTE,
+        pathname,
+        page,
+        bundlePath: appNormalizers.bundlePath.normalize(page),
+        filename: appNormalizers.filename.normalize(appPathsManifest[page]),
+      } as FilesystemRouteDefinition)
+    }
 
     for (const route of routesManifest.dataRoutes) {
       if (isDynamicRoute(route.page)) {
@@ -287,10 +405,7 @@ export async function setupFsCheck(opts: {
             // upstream builder that relies on this
             re: opts.config.i18n
               ? new RegExp(
-                  route.dataRouteRegex.replace(
-                    `/${escapedBuildId}/`,
-                    `/${escapedBuildId}/(?<nextLocale>[^/]+?)/`
-                  )
+                  addLocalePrefixToDataRouteRegex(route.dataRouteRegex, buildId)
                 )
               : new RegExp(route.dataRouteRegex),
             groups: routeRegex.groups,
@@ -450,6 +565,20 @@ export async function setupFsCheck(opts: {
     staticMetadataFiles,
     dynamicRoutes,
     nextDataRoutes,
+    setRouteDefinitions(
+      type: 'appFile' | 'pageFile',
+      definitions: ReadonlyArray<RouteDefinition>
+    ) {
+      routeDefinitions[type].clear()
+      for (const definition of definitions) {
+        setRouteDefinition(
+          type,
+          definition.pathname,
+          definition as FilesystemRouteDefinition
+        )
+      }
+    },
+    getRouteDefinition,
 
     exportPathMapRoutes: undefined as
       | undefined
@@ -611,6 +740,10 @@ export async function setupFsCheck(opts: {
           } catch {}
         }
 
+        const route = isDynamicOutput
+          ? getRouteDefinition(type, curItemPath, locale)
+          : undefined
+
         let matchedItem = items.has(curItemPath)
 
         // check decoded variant as well
@@ -692,29 +825,39 @@ export async function setupFsCheck(opts: {
                   continue
                 }
               }
-            } else if (type === 'pageFile' || type === 'appFile') {
-              const isAppFile = type === 'appFile'
-
-              // Attempt to ensure the page/app file is compiled and ready
-              if (ensureFn) {
-                const ensureItemPath = isAppFile
-                  ? normalizeMetadataRoute(curItemPath)
-                  : curItemPath
-
-                try {
-                  await ensureFn({ type, itemPath: ensureItemPath })
-                } catch (error) {
-                  // If ensure failed, skip this item and continue to the next one
-                  continue
-                }
-              }
-            } else {
+            } else if (!isDynamicOutput) {
               continue
+            }
+          }
+
+          if (opts.dev && isDynamicOutput) {
+            if (!route) {
+              continue
+            }
+
+            const isAppFile = type === 'appFile'
+
+            // Attempt to ensure the page/app file is compiled and ready.
+            if (ensureFn) {
+              const ensureItemPath = isAppFile
+                ? normalizeMetadataRoute(curItemPath)
+                : curItemPath
+
+              try {
+                await ensureFn({ type, itemPath: ensureItemPath, route })
+              } catch (error) {
+                // If ensure failed, skip this item and continue to the next one.
+                continue
+              }
             }
           }
 
           // i18n locales aren't matched for app dir
           if (type === 'appFile' && locale && locale !== i18n?.defaultLocale) {
+            continue
+          }
+
+          if (isDynamicOutput && !route && !matchedItem) {
             continue
           }
 
@@ -724,6 +867,7 @@ export async function setupFsCheck(opts: {
             locale,
             itemsRoot,
             itemPath: curItemPath,
+            route,
           }
 
           getItemsLru?.set(itemKey, itemResult)

@@ -337,8 +337,11 @@ export function getResolveRoutes(
             setIsNextDataRequest()
           }
 
-          if (config.useFileSystemPublicRoutes || didRewrite) {
-            return pageOutput
+          if (pageOutput && (config.useFileSystemPublicRoutes || didRewrite)) {
+            return {
+              ...pageOutput,
+              params,
+            }
           }
         }
       }
